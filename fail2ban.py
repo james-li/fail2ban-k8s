@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 import logging
 import os
-import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
+
+import yaml
+from kubernetes import client, config, utils
 
 cmd = "kubectl -n ingress-nginx logs ds/nginx-ingress-controller --since-time={from_time}"
 BYTES_RECV_LIMIT = 2000
@@ -19,43 +21,38 @@ TIME_FORMAT = [
     "W%m%d %H:%M:%S.%f",
 ]
 
-
-def run_iptables_cmd(cmd: str):
-    return subprocess.call(cmd.split(), stdout=None, stderr=None)
-
-
-def create_fail2ban_chain():
-    iptables_cmd = "iptables -N fail2ban"
-    return run_iptables_cmd(iptables_cmd)
-
-
-def delete_fail2ban_chain():
-    run_iptables_cmd("iptables -F fail2ban")
-    run_iptables_cmd("iptables -X fail2ban")
+BASE_YML_TEMPLATE = """
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: fail2ban
+  namespace: test
+spec:
+  ingress:
+  - from:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 10.0.0.0/16
+  podSelector:
+    matchExpressions:
+    - key: app
+      operator: In
+      values:
+      - ingress-nginx
+    matchLabels:
+      app: ingress-nginx
+  policyTypes:
+  - Ingress
+"""
 
 
 def init_fail2ban():
-    iptables_cmd = "iptables -nL fail2ban"
-    p = subprocess.Popen(iptables_cmd.split(), stdout=subprocess.PIPE)
-    if p.wait() != 0:
-        run_iptables_cmd("iptables -N fail2ban")
-        run_iptables_cmd("iptables -I INPUT 1  -j fail2ban")
-    for line in p.stdout:
-        try:
-            target, prot, _, source, destination = line.decode("UTF-8").split()
-            if target != "DROP":
-                continue
-            logging.info("load ban ip %s" % (source))
-            BAN_LIST.append(source)
-        except:
-            continue
+    pass
 
 
 def ban_ip(ip):
-    iptables_cmd = "iptables -A fail2ban -s {ip}/32 -j DROP".format(ip=ip)
-    if subprocess.call(iptables_cmd.split(), stdout=None, stderr=None) == 0:
-        logging.info("Ban ip %s successed" % (ip))
-        BAN_LIST.append(ip)
+    pass
 
 
 def get_log_time(line):
@@ -74,12 +71,10 @@ def get_log_time(line):
 
 def fail2ban(from_time: datetime):
     logging.info("get ingress nginx log from " + from_time.isoformat())
-    log_cmd = cmd.format(from_time=from_time.strftime('%Y-%m-%dT%H:%M:%SZ')).split()
-    p = subprocess.Popen(log_cmd, stdout=subprocess.PIPE)
     # p.wait()
     last_line = None
     i = 0
-    for line in p.stdout:
+    for line in read_ingress_log(from_time):
         last_line = line.decode("utf-8")
         try:
             ip_, time_, tzone_, tcp, tcp_200, bytes_recv_, bytes_send_, session_time_ = last_line.split()
@@ -120,6 +115,34 @@ def fail2ban(from_time: datetime):
     return from_time
 
 
+def start_fail2ban():
+    init_fail2ban()
+    from_time = datetime.now(timezone.utc) + timedelta(hours=-8)
+    logging.info("Start fail2ban for gitlab ssh")
+    while True:
+        from_time = fail2ban(from_time)
+        time.sleep(60)
+
+
+def read_ingress_log(from_time: datetime):
+    pass
+
+
+def k8s_api_test():
+    config.load_config()
+    v = client.CoreV1Api()
+    ret = v.list_namespaced_pod("ingress-nginx", label_selector="app=ingress-nginx")
+    for x in ret.items:
+        print(v.read_namespaced_pod_log(x.metadata.name, x.metadata.namespace, since_seconds=120))
+    base_fail2ban_network_policy_dict = yaml.load(BASE_YML_TEMPLATE, yaml.FullLoader)
+    print(base_fail2ban_network_policy_dict)
+    api_client = client.NetworkingV1Api()
+    print(api_client.list_namespaced_network_policy("test"))
+    # body = client.V1NetworkPolicy()
+    resp = api_client.patch_namespaced_network_policy("fail2ban", "test", body=base_fail2ban_network_policy_dict)
+    print(resp)
+
+
 if __name__ == "__main__":
     EXECDIR = os.path.abspath(os.path.dirname(sys.argv[0]))
     LOGDIR = os.path.join(EXECDIR, "logs")
@@ -127,9 +150,3 @@ if __name__ == "__main__":
         handlers=[logging.FileHandler(encoding='utf-8', mode='a', filename=os.path.join(LOGDIR, "log.txt"))],
         format="%(asctime)s %(levelname)s:%(message)s",
         level=logging.INFO)
-    init_fail2ban()
-    from_time = datetime.now(timezone.utc) + timedelta(hours=-8)
-    logging.info("Start fail2ban for gitlab ssh")
-    while True:
-        from_time = fail2ban(from_time)
-        time.sleep(60)
