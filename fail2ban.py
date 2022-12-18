@@ -5,54 +5,20 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 
-import yaml
-from kubernetes import client, config, utils
+from kubernetes_client import pod_fail2ban_handler
 
-cmd = "kubectl -n ingress-nginx logs ds/nginx-ingress-controller --since-time={from_time}"
 BYTES_RECV_LIMIT = 2000
 BYTES_SEND_LIMIT = 2000
 SESSION_TIME_LIMIT = 0.2
-BAN_LIST = []
 SUSPICIOUS_LIST = {}
+
+fail2ban_handler = pod_fail2ban_handler()
 
 TIME_FORMAT = [
     "%d/%b/%Y:%H:%M:%S %z",
     "I%m%d %H:%M:%S.%f",
     "W%m%d %H:%M:%S.%f",
 ]
-
-BASE_YML_TEMPLATE = """
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: fail2ban
-  namespace: test
-spec:
-  ingress:
-  - from:
-    - ipBlock:
-        cidr: 0.0.0.0/0
-        except:
-        - 10.0.0.0/16
-  podSelector:
-    matchExpressions:
-    - key: app
-      operator: In
-      values:
-      - ingress-nginx
-    matchLabels:
-      app: ingress-nginx
-  policyTypes:
-  - Ingress
-"""
-
-
-def init_fail2ban():
-    pass
-
-
-def ban_ip(ip):
-    pass
 
 
 def get_log_time(line):
@@ -74,8 +40,11 @@ def fail2ban(from_time: datetime):
     # p.wait()
     last_line = None
     i = 0
-    for line in read_ingress_log(from_time):
-        last_line = line.decode("utf-8")
+    for line in fail2ban_handler.read_log(from_time):
+        if line.strip():
+            last_line = line.strip()
+        else:
+            continue
         try:
             ip_, time_, tzone_, tcp, tcp_200, bytes_recv_, bytes_send_, session_time_ = last_line.split()
             if tcp != "TCP" or tcp_200 != "200":
@@ -93,12 +62,15 @@ def fail2ban(from_time: datetime):
         except:
             continue
     logging.info("parse log and find %d suspicious login attempts" % (i))
-    p.wait()
     if last_line:
         login_time = get_log_time(last_line)
         if login_time:
             from_time = login_time
+    if i == 0:
+        return from_time
     pop = []
+    ban_ip_list = fail2ban_handler.get_ban_ip()
+    updated = False
     for ip, login_time_list in SUSPICIOUS_LIST.items():
         logging.info("handle suspicious ip %s, last attempt at %s, attempt retires %d",
                      ip, login_time_list[-1], len(login_time_list))
@@ -107,16 +79,20 @@ def fail2ban(from_time: datetime):
             if login_time_list[-1] + timedelta(minutes=5) < datetime.now(timezone.utc):
                 pop.append(ip)
             continue
-        if ip not in BAN_LIST:
-            ban_ip(ip)
+        if ip not in ban_ip_list:
+            updated = True
+            cidr = "%s/32" % ip
+            logging.info("Ban ip %s" % cidr)
+            ban_ip_list.append(cidr)
         pop.append(ip)
-    for k in pop:
-        del SUSPICIOUS_LIST[k]
+    if updated:
+        ret = fail2ban_handler.set_ban_ip(ban_ip_list)
+        for k in pop:
+            del SUSPICIOUS_LIST[k]
     return from_time
 
 
 def start_fail2ban():
-    init_fail2ban()
     from_time = datetime.now(timezone.utc) + timedelta(hours=-8)
     logging.info("Start fail2ban for gitlab ssh")
     while True:
@@ -124,10 +100,7 @@ def start_fail2ban():
         time.sleep(60)
 
 
-def read_ingress_log(from_time: datetime):
-    pass
-
-
+'''
 def k8s_api_test():
     config.load_config()
     v = client.CoreV1Api()
@@ -141,7 +114,7 @@ def k8s_api_test():
     # body = client.V1NetworkPolicy()
     resp = api_client.patch_namespaced_network_policy("fail2ban", "test", body=base_fail2ban_network_policy_dict)
     print(resp)
-
+'''
 
 if __name__ == "__main__":
     EXECDIR = os.path.abspath(os.path.dirname(sys.argv[0]))
@@ -150,3 +123,4 @@ if __name__ == "__main__":
         handlers=[logging.FileHandler(encoding='utf-8', mode='a', filename=os.path.join(LOGDIR, "log.txt"))],
         format="%(asctime)s %(levelname)s:%(message)s",
         level=logging.INFO)
+    start_fail2ban()

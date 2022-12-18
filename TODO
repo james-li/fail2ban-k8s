@@ -1,1 +1,2 @@
 - use k8s api to get log and modify ingress rule
+- build as a helm of k8s instance
