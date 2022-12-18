@@ -2,6 +2,7 @@ from datetime import datetime, timezone, timedelta
 
 import yaml
 from kubernetes import client, config
+import logging
 
 
 def return_on_exception(value):
@@ -10,6 +11,7 @@ def return_on_exception(value):
             try:
                 return f(*args, **kwargs)
             except BaseException as e:
+                logging.info(str(e))
                 return value
 
         return applicator
@@ -40,12 +42,15 @@ spec:
   - Ingress        
     """
 
-    def __init__(self):
-        config.load_config()
+    def __init__(self, in_cluster=False):
+        if in_cluster:
+            config.load_incluster_config()
+        else:
+            config.load_config()
         self._core_api = client.CoreV1Api()
         self._net_api = client.NetworkingV1Api()
         self._name_space = "ingress-nginx"
-        #self._name_space = "test"
+        # self._name_space = "test"
         self._base_network_policy = yaml.load(self._BASE_NETWORK_POLICY, yaml.FullLoader)
         self._network_policy_name = "fail2ban"
         self._pod_selector = {"label_selector": "app=ingress-nginx"}
@@ -69,7 +74,7 @@ spec:
         return [x.metadata.name for x in ret.items]
 
     @return_on_exception([])
-    def read_log(self, from_time: datetime)->list:
+    def read_log(self, from_time: datetime) -> list:
         since_seconds = int((datetime.now(timezone.utc) - from_time).total_seconds())
         pod = self.get_ingress_controller_pod()[0]
         return self.core_api.read_namespaced_pod_log(pod, "ingress-nginx", since_seconds=since_seconds).split('\n')

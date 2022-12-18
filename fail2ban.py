@@ -1,4 +1,5 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
+
 import logging
 import os
 import sys
@@ -12,7 +13,8 @@ BYTES_SEND_LIMIT = 2000
 SESSION_TIME_LIMIT = 0.2
 SUSPICIOUS_LIST = {}
 
-fail2ban_handler = pod_fail2ban_handler()
+
+fail2ban_handler = pod_fail2ban_handler(os.environ.get("KUBERNETES_SERVICE_PORT") is not None)
 
 TIME_FORMAT = [
     "%d/%b/%Y:%H:%M:%S %z",
@@ -123,4 +125,5 @@ if __name__ == "__main__":
         handlers=[logging.FileHandler(encoding='utf-8', mode='a', filename=os.path.join(LOGDIR, "log.txt"))],
         format="%(asctime)s %(levelname)s:%(message)s",
         level=logging.INFO)
+    logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
     start_fail2ban()
