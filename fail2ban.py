@@ -1,18 +1,18 @@
 #!/usr/bin/env python
-
+import ipaddress
 import logging
 import os
 import sys
 import time
 from datetime import datetime, timedelta, timezone
 
-from kubernetes_client import pod_fail2ban_handler
+from kubernetes_client import pod_fail2ban_handler, return_on_exception
 
 BYTES_RECV_LIMIT = 2000
 BYTES_SEND_LIMIT = 2000
 SESSION_TIME_LIMIT = 0.2
 SUSPICIOUS_LIST = {}
-
+WHITELIST = "/opt/fail2ban/whitelist"
 
 fail2ban_handler = pod_fail2ban_handler(os.environ.get("KUBERNETES_SERVICE_PORT") is not None)
 
@@ -37,11 +37,35 @@ def get_log_time(line):
     return None
 
 
+@return_on_exception(False)
+def match_ip_cidr(src, dst):
+    src_ip = src.split('/')[0]
+    return ipaddress.ip_address(src_ip) in ipaddress.ip_network(dst)
+
+
+def filter_white_ip(ip_list: list, white_list: list) -> list:
+    ban_ip_list = []
+    for ip in ip_list:
+        banned = True
+        for white_ip in white_list:
+            if match_ip_cidr(ip, white_ip):
+                banned = False
+                break
+        if banned:
+            ban_ip_list.append(ip)
+    return ban_ip_list
+
+
 def fail2ban(from_time: datetime):
     logging.info("get ingress nginx log from " + from_time.isoformat())
     # p.wait()
     last_line = None
     i = 0
+    try:
+        with open(WHITELIST, "r") as fp:
+            white_list = [line.strip() for line in fp.readlines()]
+    except:
+        white_list = []
     for line in fail2ban_handler.read_log(from_time):
         if line.strip():
             last_line = line.strip()
@@ -88,7 +112,7 @@ def fail2ban(from_time: datetime):
             ban_ip_list.append(cidr)
         pop.append(ip)
     if updated:
-        ret = fail2ban_handler.set_ban_ip(ban_ip_list)
+        ret = fail2ban_handler.set_ban_ip(filter_white_ip(ban_ip_list, white_list))
         for k in pop:
             del SUSPICIOUS_LIST[k]
     return from_time
