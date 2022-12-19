@@ -123,7 +123,7 @@ def start_fail2ban():
     logging.info("Start fail2ban for gitlab ssh")
     while True:
         from_time = fail2ban(from_time)
-        time.sleep(60)
+        time.sleep(int(os.environ.get("FAIL2BAN_INTERVAL", "10")))
 
 
 '''
