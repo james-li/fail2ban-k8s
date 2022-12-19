@@ -31,7 +31,7 @@ def get_log_time(line):
         time_str = (tokens[i] + " " + tokens[i + 1]).replace("[", "").replace("]", "")
         for format in TIME_FORMAT:
             try:
-                return datetime.strptime(time_str, format)
+                return datetime.strptime(time_str, format).replace(tzinfo=timezone.utc)
             except:
                 pass
     return None
