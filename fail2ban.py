@@ -105,9 +105,9 @@ def fail2ban(from_time: datetime):
             if login_time_list[-1] + timedelta(minutes=5) < datetime.now(timezone.utc):
                 pop.append(ip)
             continue
-        if ip not in ban_ip_list:
+        cidr = "%s/32" % ip
+        if cidr not in ban_ip_list:
             updated = True
-            cidr = "%s/32" % ip
             logging.info("Ban ip %s" % cidr)
             ban_ip_list.append(cidr)
         pop.append(ip)
