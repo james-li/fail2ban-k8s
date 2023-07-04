@@ -1,8 +1,8 @@
-from datetime import datetime, timezone, timedelta
+import logging
+from datetime import datetime, timezone
 
 import yaml
 from kubernetes import client, config
-import logging
 
 
 def return_on_exception(value):
