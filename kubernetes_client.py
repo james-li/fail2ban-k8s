@@ -76,8 +76,11 @@ spec:
     @return_on_exception([])
     def read_log(self, from_time: datetime) -> list:
         since_seconds = int((datetime.now(timezone.utc) - from_time).total_seconds())
-        pod = self.get_ingress_controller_pod()[0]
-        return self.core_api.read_namespaced_pod_log(pod, "ingress-nginx", since_seconds=since_seconds).split('\n')
+        logs = []
+        for pod in self.get_ingress_controller_pod():
+            logs.extend(
+                self.core_api.read_namespaced_pod_log(pod, "ingress-nginx", since_seconds=since_seconds).split('\n'))
+        return logs
 
     @return_on_exception(None)
     def get_network_policy(self):
