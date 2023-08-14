@@ -1,0 +1,4 @@
+PyYAML~=5.4.1
+kubernetes~=25.3.0
+
+ipwhois~=1.2.0

@@ -5,6 +5,7 @@ import os
 import sys
 import time
 from datetime import datetime, timedelta, timezone
+from ipwhois import IPWhois
 
 from kubernetes_client import pod_fail2ban_handler, return_on_exception
 
@@ -43,6 +44,13 @@ def match_ip_cidr(src, dst):
     return ipaddress.ip_address(src_ip) in ipaddress.ip_network(dst)
 
 
+def in_white_list(ip: str, white_list: set) -> bool:
+    for white_ip in white_list:
+        if match_ip_cidr(ip, white_ip):
+            return True
+    return False
+
+
 def filter_white_ip(ip_list: list, white_list: list) -> list:
     ban_ip_list = []
     for ip in ip_list:
@@ -56,6 +64,14 @@ def filter_white_ip(ip_list: list, white_list: list) -> list:
     return ban_ip_list
 
 
+def ip_whois(ip: str) -> str:
+    try:
+        whois = IPWhois(ip).lookup_whois()["nets"][0]
+        return f'From {whois["country"]}:{whois["city"]}'
+    except:
+        return "From unknown"
+
+
 def fail2ban(from_time: datetime):
     logging.info("get ingress nginx log from " + from_time.isoformat())
     # p.wait()
@@ -63,9 +79,9 @@ def fail2ban(from_time: datetime):
     i = 0
     try:
         with open(WHITELIST, "r") as fp:
-            white_list = [line.strip() for line in fp.readlines()]
+            white_list = set([line.strip() for line in fp.readlines()])
     except:
-        white_list = []
+        white_list = set()
     for line in fail2ban_handler.read_log(from_time):
         if line.strip():
             last_line = line.strip()
@@ -85,6 +101,10 @@ def fail2ban(from_time: datetime):
                 lst.append(login_time)
                 SUSPICIOUS_LIST[ip] = lst
                 i += 1
+            else:
+                if ip in SUSPICIOUS_LIST:
+                    SUSPICIOUS_LIST.pop(ip)
+                white_list.add(ip)
         except:
             continue
     logging.info("parse log and find %d suspicious login attempts" % (i))
@@ -98,12 +118,17 @@ def fail2ban(from_time: datetime):
     ban_ip_list = fail2ban_handler.get_ban_ip()
     updated = False
     for ip, login_time_list in SUSPICIOUS_LIST.items():
-        logging.info("handle suspicious ip %s, last attempt at %s, attempt retires %d",
-                     ip, login_time_list[-1], len(login_time_list))
-        if len(login_time_list) < 3:
+
+        logging.info("handle suspicious ip %s(%s), last attempt at %s, attempt retires %d",
+                     ip, ip_whois(ip), login_time_list[-1], len(login_time_list))
+        max_retries, interval = 3, 5
+        if in_white_list(ip, white_list):
+            max_retries, interval = 10, 10
+        if len(login_time_list) < max_retries:
             # 间隔大于5分钟忽略
-            if login_time_list[-1] + timedelta(minutes=5) < datetime.now(timezone.utc):
-                pop.append(ip)
+            if in_white_list(ip, white_list):
+                if login_time_list[-1] + timedelta(minutes=interval) < datetime.now(timezone.utc):
+                    pop.append(ip)
             continue
         cidr = "%s/32" % ip
         if cidr not in ban_ip_list:
@@ -112,7 +137,7 @@ def fail2ban(from_time: datetime):
             ban_ip_list.append(cidr)
         pop.append(ip)
     if updated:
-        ret = fail2ban_handler.set_ban_ip(filter_white_ip(ban_ip_list, white_list))
+        ret = fail2ban_handler.set_ban_ip(ban_ip_list)
         for k in pop:
             del SUSPICIOUS_LIST[k]
     return from_time
