@@ -72,8 +72,9 @@ def fail2ban(from_time: datetime):
         else:
             continue
         try:
-            ip_, time_, tzone_, tcp, tcp_200, bytes_recv_, bytes_send_, session_time_ = last_line.split()
-            if tcp != "TCP" or tcp_200 != "200":
+            ip_, time_, tzone_, tcp, tcp_200, bytes_recv_, bytes_send_, session_time_, server_ip_port = last_line.split()
+            _, server_port = server_ip_port.replace('"', '').split(':')
+            if tcp != "TCP" or tcp_200 != "200" or server_port not in ["2222", "18622", "18623"]:
                 continue
             ip = ip_[1:-1]
             login_time = datetime.strptime((time_ + " " + tzone_)[1:-1], "%d/%b/%Y:%H:%M:%S %z")
@@ -100,9 +101,9 @@ def fail2ban(from_time: datetime):
     for ip, login_time_list in SUSPICIOUS_LIST.items():
         logging.info("handle suspicious ip %s, last attempt at %s, attempt retires %d",
                      ip, login_time_list[-1], len(login_time_list))
-        if len(login_time_list) < 3:
+        if len(login_time_list) < 5:
             # 间隔大于5分钟忽略
-            if login_time_list[-1] + timedelta(minutes=5) < datetime.now(timezone.utc):
+            if login_time_list[-1] + timedelta(minutes=10) < datetime.now(timezone.utc):
                 pop.append(ip)
             continue
         cidr = "%s/32" % ip
