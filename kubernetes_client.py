@@ -97,9 +97,12 @@ spec:
                 raise e
 
     @return_on_exception([])
-    def get_ban_ip(self) -> list:
+    def get_ban_ip(self) -> dict:
         network_policy = self.get_network_policy()
-        return network_policy.items[0].spec.ingress[0]._from[0].ip_block._except
+        try:
+            return {ip: True for ip in network_policy.items[0].spec.ingress[0]._from[0].ip_block._except}
+        except:
+            return {}
 
     def ban_ip(self, cidr: str):
         network_policy = self.get_network_policy()

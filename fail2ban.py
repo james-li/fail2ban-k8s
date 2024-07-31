@@ -43,17 +43,11 @@ def match_ip_cidr(src, dst):
     return ipaddress.ip_address(src_ip) in ipaddress.ip_network(dst)
 
 
-def filter_white_ip(ip_list: list, white_list: list) -> list:
-    ban_ip_list = []
-    for ip in ip_list:
-        banned = True
-        for white_ip in white_list:
-            if match_ip_cidr(ip, white_ip):
-                banned = False
-                break
-        if banned:
-            ban_ip_list.append(ip)
-    return ban_ip_list
+def filter_white_ip(ip_list: dict, white_list: list) -> list:
+    for ip in white_list:
+        cidr = "%s/32" % ip
+        if cidr in ip_list:
+            ip_list.pop(cidr)
 
 
 def fail2ban(from_time: datetime):
@@ -66,6 +60,7 @@ def fail2ban(from_time: datetime):
             white_list = [line.strip() for line in fp.readlines()]
     except:
         white_list = []
+    ban_ip_list = fail2ban_handler.get_ban_ip()
     for line in fail2ban_handler.read_log(from_time):
         if line.strip():
             last_line = line.strip()
@@ -81,7 +76,8 @@ def fail2ban(from_time: datetime):
             bytes_recv = int(bytes_recv_)
             bytes_send = int(bytes_send_)
             session_time = float(session_time_)
-            if bytes_send < BYTES_SEND_LIMIT and bytes_recv < BYTES_RECV_LIMIT:
+            cidr = "%s/32" % ip
+            if bytes_send < BYTES_SEND_LIMIT and bytes_recv < BYTES_RECV_LIMIT and cidr not in ban_ip_list:
                 lst = SUSPICIOUS_LIST.get(ip, [])
                 lst.append(login_time)
                 SUSPICIOUS_LIST[ip] = lst
@@ -96,7 +92,6 @@ def fail2ban(from_time: datetime):
     if i == 0:
         return from_time
     pop = []
-    ban_ip_list = fail2ban_handler.get_ban_ip()
     updated = False
     for ip, login_time_list in SUSPICIOUS_LIST.items():
         logging.info("handle suspicious ip %s, last attempt at %s, attempt retires %d",
@@ -110,12 +105,13 @@ def fail2ban(from_time: datetime):
         if cidr not in ban_ip_list:
             updated = True
             logging.info("Ban ip %s" % cidr)
-            ban_ip_list.append(cidr)
+            ban_ip_list[cidr] = True
         pop.append(ip)
     if updated:
-        ret = fail2ban_handler.set_ban_ip(filter_white_ip(ban_ip_list, white_list))
-        for k in pop:
-            del SUSPICIOUS_LIST[k]
+        filter_white_ip(ban_ip_list, white_list)
+        ret = fail2ban_handler.set_ban_ip(list(ban_ip_list.keys()))
+    for k in pop:
+        del SUSPICIOUS_LIST[k]
     return from_time
 
 
