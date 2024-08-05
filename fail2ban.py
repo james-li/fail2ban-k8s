@@ -4,8 +4,10 @@ import logging
 import os
 import sys
 import time
+import traceback
 from datetime import datetime, timedelta, timezone
 from ipwhois import IPWhois
+from typing import List
 
 from kubernetes_client import pod_fail2ban_handler, return_on_exception
 
@@ -14,7 +16,7 @@ BYTES_SEND_LIMIT = 2000
 SESSION_TIME_LIMIT = 0.2
 SUSPICIOUS_LIST = {}
 WHITELIST = {}
-
+KNOWN_IP_WHOIS = []
 fail2ban_handler = pod_fail2ban_handler(os.environ.get("KUBERNETES_SERVICE_PORT") is not None)
 
 TIME_FORMAT = [
@@ -24,24 +26,72 @@ TIME_FORMAT = [
 ]
 
 
-def get_log_time(line):
-    tokens = line.split()
-    if len(tokens) == 1:
-        return None
-    for i in range(0, len(tokens) - 1):
-        time_str = (tokens[i] + " " + tokens[i + 1]).replace("[", "").replace("]", "")
-        for format in TIME_FORMAT:
-            try:
-                return datetime.strptime(time_str, format).replace(tzinfo=timezone.utc)
-            except:
-                pass
-    return None
-
-
 @return_on_exception(False)
 def match_ip_cidr(src, dst):
     src_ip = src.split('/')[0]
     return ipaddress.ip_address(src_ip) in ipaddress.ip_network(dst)
+
+
+def ip_match(ip, cidr) -> bool:
+    ip_address = ipaddress.ip_address(ip)
+    network = ipaddress.ip_network(cidr)
+    return ip_address in network
+
+
+def get_whois_info(ip_address: str):
+    ip_address = ip_address.split("/")[0]
+    for ip_range, country in KNOWN_IP_WHOIS:
+        if ip_match(ip_address, ip_range):
+            return ip_range, country
+    try:
+        obj = IPWhois(ip_address)
+
+        # 获取WHOIS信息
+        result = obj.lookup_rdap()
+
+        # 提取IP区段和国家
+        ip_range = result.get('network', {}).get('cidr', 'N/A')
+        if ip_range == "0.0.0.0/0":
+            raise Exception("Unknown ip range")
+        country = result.get('asn_country_code', 'N/A').strip()
+        cidrs = ip_range.split(",")
+        for cidr in ip_range.split(","):
+            cidr = cidr.strip()
+            KNOWN_IP_WHOIS.append((cidr, country))
+            if ip_match(ip_address, cidr.strip()):
+                return cidr, country
+        return cidrs[0].strip()
+    except:
+        # traceback.print_exc()
+        return ip_address, "CN"
+
+
+def group_ban_ip(ban_ip_list: dict) -> List[str]:
+    BAN_BY_IP_RANGE = {}
+    global WHITELIST
+    for ip in ban_ip_list.keys():
+        if ip.endswith("/32"):
+            if ip.split("/")[0] in WHITELIST:
+                continue
+            try:
+                ip_range, country = get_whois_info(ip)
+                logging.info("get whois info for %s: %s %s" % (ip, ip_range, country))
+                BAN_BY_IP_RANGE.setdefault(ip_range, []).append((ip, country))
+            except:
+                traceback.print_exc()
+        else:
+            BAN_BY_IP_RANGE[ip] = []
+    ips = []
+    for ip_range, ip_list in BAN_BY_IP_RANGE.items():
+        # 不是中国IP，封IP段
+        if not ip_list:
+            ips.append(ip_range)
+        elif ip_list[0][1] != "CN" and len(ip_list) > 3:
+            logging.info("ban ip range %s from %s" % (ip_range, ip_list[0][1]))
+            ips.append(ip_range)
+        else:
+            ips.extend(set([x[0] for x in ip_list]))
+    return ips
 
 
 def fail2ban(from_time: datetime):
@@ -66,8 +116,6 @@ def fail2ban(from_time: datetime):
                 from_now = int((datetime.now(timezone.utc) - login_time).total_seconds())
                 if since_second > from_now:
                     since_second = from_now
-                if from_time < login_time:
-                    from_time = login_time
                 bytes_recv = int(bytes_recv_)
                 bytes_send = int(bytes_send_)
                 session_time = float(session_time_)
@@ -109,7 +157,7 @@ def fail2ban(from_time: datetime):
             ban_ip_list[cidr] = True
         pop.append(ip)
     if updated:
-        ret = fail2ban_handler.set_ban_ip(list(ban_ip_list.keys()))
+        ret = fail2ban_handler.set_ban_ip(group_ban_ip(ban_ip_list))
     for k in pop:
         del SUSPICIOUS_LIST[k]
     return from_time

@@ -116,16 +116,6 @@ spec:
         except:
             return {}
 
-    def ban_ip(self, cidr: str):
-        network_policy = self.get_network_policy()
-        ban_ip_list = self.get_ban_ip()
-        if cidr not in ban_ip_list:
-            ban_ip_list.append(cidr)
-        else:
-            return network_policy
-        self._base_network_policy["spec"]["ingress"][0]["from"][0]["ipBlock"]["except"] = ban_ip_list
-        return self.create_or_update_network_poicy(self._network_policy_name, self._base_network_policy)
-
     def set_ban_ip(self, cidr_list: list):
         self._base_network_policy["spec"]["ingress"][0]["from"][0]["ipBlock"]["except"] = cidr_list
         return self.create_or_update_network_poicy(self._network_policy_name, self._base_network_policy)
