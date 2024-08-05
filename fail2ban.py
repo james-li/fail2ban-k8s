@@ -44,53 +44,58 @@ def match_ip_cidr(src, dst):
 
 
 def fail2ban(from_time: datetime):
-    logging.info("get ingress nginx log from " + from_time.isoformat())
     # p.wait()
-    last_line = None
     i = 0
     ban_ip_list = fail2ban_handler.get_ban_ip()
-    for line in fail2ban_handler.read_log(from_time):
-        if line.strip():
-            last_line = line.strip()
-        else:
-            continue
-        try:
-            ip_, time_, tzone_, tcp, tcp_200, bytes_recv_, bytes_send_, session_time_, server_ip_port = last_line.split()
-            _, server_port = server_ip_port.replace('"', '').split(':')
-            if tcp != "TCP" or tcp_200 != "200" or server_port not in ["2222", "18622", "18623", "18624"]:
+    pod_logs = fail2ban_handler.read_log(from_time)
+    for pod, pod_log in pod_logs.items():
+        since_second = pod_log.get("from", 7200)
+        for line in pod_log.get("log"):
+            if line.strip():
+                last_line = line.strip()
+            else:
                 continue
-            ip = ip_[1:-1]
-            login_time = datetime.strptime((time_ + " " + tzone_)[1:-1], "%d/%b/%Y:%H:%M:%S %z")
-            bytes_recv = int(bytes_recv_)
-            bytes_send = int(bytes_send_)
-            session_time = float(session_time_)
-            cidr = "%s/32" % ip
-            if bytes_send > BYTES_SEND_LIMIT and bytes_recv > BYTES_RECV_LIMIT:
-                WHITELIST[ip] = 1
-                if ip in SUSPICIOUS_LIST:
-                    SUSPICIOUS_LIST.pop(ip)
+            try:
+                ip_, time_, tzone_, tcp, tcp_200, bytes_recv_, bytes_send_, session_time_, server_ip_port = last_line.split()
+                _, server_port = server_ip_port.replace('"', '').split(':')
+                if tcp != "TCP" or tcp_200 != "200" or server_port not in ["2222", "18622", "18623", "18624", "18336"]:
+                    continue
+                ip = ip_[1:-1]
+                login_time = datetime.strptime((time_ + " " + tzone_)[1:-1], "%d/%b/%Y:%H:%M:%S %z")
+                from_now = int((datetime.now(timezone.utc) - login_time).total_seconds())
+                if since_second > from_now:
+                    since_second = from_now
+                if from_time < login_time:
+                    from_time = login_time
+                bytes_recv = int(bytes_recv_)
+                bytes_send = int(bytes_send_)
+                session_time = float(session_time_)
+                cidr = "%s/32" % ip
+                if ip not in WHITELIST and bytes_send > BYTES_SEND_LIMIT and bytes_recv > BYTES_RECV_LIMIT:
+                    logging.info("add %s to whitelist" % ip)
+                    WHITELIST[ip] = 1
+                    if ip in SUSPICIOUS_LIST:
+                        SUSPICIOUS_LIST.pop(ip)
+                    continue
+                if ip in WHITELIST:
+                    continue
+                if bytes_send < BYTES_SEND_LIMIT and bytes_recv < BYTES_RECV_LIMIT and cidr not in ban_ip_list:
+                    lst = SUSPICIOUS_LIST.get(ip, [])
+                    lst.append(login_time)
+                    SUSPICIOUS_LIST[ip] = lst
+                    i += 1
+            except:
                 continue
-            if ip in WHITELIST:
-                continue
-            if bytes_send < BYTES_SEND_LIMIT and bytes_recv < BYTES_RECV_LIMIT and cidr not in ban_ip_list:
-                lst = SUSPICIOUS_LIST.get(ip, [])
-                lst.append(login_time)
-                SUSPICIOUS_LIST[ip] = lst
-                i += 1
-        except:
-            continue
+        pod_log["from"] = since_second
     logging.info("parse log and find %d suspicious login attempts" % (i))
-    if last_line:
-        login_time = get_log_time(last_line)
-        if login_time:
-            from_time = login_time
+
     if i == 0:
         return from_time
     pop = []
     updated = False
     for ip, login_time_list in SUSPICIOUS_LIST.items():
         logging.info("handle suspicious ip %s, last attempt at %s, attempt retires %d",
-                     ip, login_time_list[-1], len(login_time_list))
+                     ip, login_time_list[-1].astimezone(), len(login_time_list))
         if len(login_time_list) < 5:
             # 间隔大于5分钟忽略
             if login_time_list[-1] + timedelta(minutes=10) < datetime.now(timezone.utc):
@@ -140,5 +145,7 @@ if __name__ == "__main__":
         handlers=[logging.FileHandler(encoding='utf-8', mode='a', filename=os.path.join(LOGDIR, "log.txt"))],
         format="%(asctime)s %(levelname)s:%(message)s",
         level=logging.INFO)
-    logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s:%(message)s"))
+    logging.getLogger().addHandler(stream_handler)
     start_fail2ban()

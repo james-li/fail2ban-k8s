@@ -1,8 +1,10 @@
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import yaml
 from kubernetes import client, config
+
+logger = logging.getLogger(__name__)
 
 
 def return_on_exception(value):
@@ -54,6 +56,7 @@ spec:
         self._base_network_policy = yaml.load(self._BASE_NETWORK_POLICY, yaml.FullLoader)
         self._network_policy_name = "fail2ban"
         self._pod_selector = {"label_selector": "app=ingress-nginx"}
+        self._pod_log = {}
 
     def set_name_space(self, namespace: str):
         self._name_space = namespace
@@ -73,14 +76,23 @@ spec:
         ret = self.core_api.list_namespaced_pod(self._name_space, **self._pod_selector)
         return [x.metadata.name for x in ret.items]
 
-    @return_on_exception([])
-    def read_log(self, from_time: datetime) -> list:
-        since_seconds = int((datetime.now(timezone.utc) - from_time).total_seconds())
-        logs = []
+    @return_on_exception({})
+    def read_log(self, from_time: datetime) -> dict:
         for pod in self.get_ingress_controller_pod():
-            logs.extend(
-                self.core_api.read_namespaced_pod_log(pod, "ingress-nginx", since_seconds=since_seconds).split('\n'))
-        return logs
+            try:
+                since_seconds = self._pod_log.get(pod).get("from")
+            except:
+                self._pod_log[pod] = {}
+                since_seconds = None
+            if not since_seconds:
+                since_seconds = int((datetime.now(timezone.utc) - from_time).total_seconds())
+            else:
+                from_time = datetime.now(timezone.utc) + timedelta(seconds=-since_seconds)
+            logger.info("get pod %s's log from %s" % (pod, from_time.astimezone()))
+            pod_logs = self.core_api.read_namespaced_pod_log(pod, "ingress-nginx", since_seconds=since_seconds).split(
+                '\n')
+            self._pod_log[pod]["log"] = pod_logs
+        return self._pod_log
 
     @return_on_exception(None)
     def get_network_policy(self):
