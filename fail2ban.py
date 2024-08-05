@@ -5,6 +5,7 @@ import os
 import sys
 import time
 from datetime import datetime, timedelta, timezone
+from ipwhois import IPWhois
 
 from kubernetes_client import pod_fail2ban_handler, return_on_exception
 
