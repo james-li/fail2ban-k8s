@@ -12,7 +12,7 @@ BYTES_RECV_LIMIT = 2000
 BYTES_SEND_LIMIT = 2000
 SESSION_TIME_LIMIT = 0.2
 SUSPICIOUS_LIST = {}
-WHITELIST = "/opt/fail2ban/whitelist"
+WHITELIST = {}
 
 fail2ban_handler = pod_fail2ban_handler(os.environ.get("KUBERNETES_SERVICE_PORT") is not None)
 
@@ -43,23 +43,11 @@ def match_ip_cidr(src, dst):
     return ipaddress.ip_address(src_ip) in ipaddress.ip_network(dst)
 
 
-def filter_white_ip(ip_list: dict, white_list: list) -> list:
-    for ip in white_list:
-        cidr = "%s/32" % ip
-        if cidr in ip_list:
-            ip_list.pop(cidr)
-
-
 def fail2ban(from_time: datetime):
     logging.info("get ingress nginx log from " + from_time.isoformat())
     # p.wait()
     last_line = None
     i = 0
-    try:
-        with open(WHITELIST, "r") as fp:
-            white_list = [line.strip() for line in fp.readlines()]
-    except:
-        white_list = []
     ban_ip_list = fail2ban_handler.get_ban_ip()
     for line in fail2ban_handler.read_log(from_time):
         if line.strip():
@@ -69,7 +57,7 @@ def fail2ban(from_time: datetime):
         try:
             ip_, time_, tzone_, tcp, tcp_200, bytes_recv_, bytes_send_, session_time_, server_ip_port = last_line.split()
             _, server_port = server_ip_port.replace('"', '').split(':')
-            if tcp != "TCP" or tcp_200 != "200" or server_port not in ["2222", "18622", "18623"]:
+            if tcp != "TCP" or tcp_200 != "200" or server_port not in ["2222", "18622", "18623", "18624"]:
                 continue
             ip = ip_[1:-1]
             login_time = datetime.strptime((time_ + " " + tzone_)[1:-1], "%d/%b/%Y:%H:%M:%S %z")
@@ -77,6 +65,13 @@ def fail2ban(from_time: datetime):
             bytes_send = int(bytes_send_)
             session_time = float(session_time_)
             cidr = "%s/32" % ip
+            if bytes_send > BYTES_SEND_LIMIT and bytes_recv > BYTES_RECV_LIMIT:
+                WHITELIST[ip] = 1
+                if ip in SUSPICIOUS_LIST:
+                    SUSPICIOUS_LIST.pop(ip)
+                continue
+            if ip in WHITELIST:
+                continue
             if bytes_send < BYTES_SEND_LIMIT and bytes_recv < BYTES_RECV_LIMIT and cidr not in ban_ip_list:
                 lst = SUSPICIOUS_LIST.get(ip, [])
                 lst.append(login_time)
@@ -108,7 +103,6 @@ def fail2ban(from_time: datetime):
             ban_ip_list[cidr] = True
         pop.append(ip)
     if updated:
-        filter_white_ip(ban_ip_list, white_list)
         ret = fail2ban_handler.set_ban_ip(list(ban_ip_list.keys()))
     for k in pop:
         del SUSPICIOUS_LIST[k]
@@ -116,7 +110,7 @@ def fail2ban(from_time: datetime):
 
 
 def start_fail2ban():
-    from_time = datetime.now(timezone.utc) + timedelta(hours=-8)
+    from_time = datetime.now(timezone.utc) + timedelta(hours=-2)
     logging.info("Start fail2ban for gitlab ssh")
     while True:
         from_time = fail2ban(from_time)
